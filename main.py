@@ -1,7 +1,9 @@
 import sys
 import argparse
+import time
 import torch
 import numpy as np
+import cv2
 
 from recycle_models import OtherBestNet, BestSoFarNet
 
@@ -14,7 +16,9 @@ def object_detection():
     """
     # TODO: Add code for detecting an object, should return the frame
     #       containing the object as a numpy array
-    return np.zeros((10, 10))
+    ret = 0  # if q pressed send ret == -1, MAY NOT NEED THIS IF Q IN MAIN
+             # LOOP CAN KILL THIS
+    return np.zeros((10, 10)), ret
 
 
 def convert_to_my_classes(x):
@@ -46,6 +50,7 @@ def object_classification(model, frame, use_gpu):
     :param use_gpu: Indicates if the GPU is available
     :return: The classification, 0(blue), 1(grey), 2(trash), or 3(green)
     """
+    return 1
     if use_gpu:
         frame = torch.tensor(frame).cuda()
     # get sample outputs
@@ -64,6 +69,7 @@ def perform_job(result):
     returns to its original position at the end of this function.
     """
     print('Get moving bitch')
+    time.sleep(5)
     pass
 
 
@@ -105,10 +111,17 @@ def main():
     use_gpu = torch.cuda.is_available()
     model = model_init(args.model, use_gpu)
     while True:
-        frame = object_detection()
+        frame, ret = object_detection()
+        if ret == -1:
+            break
         result = object_classification(model, frame, use_gpu)
         print('Classification:', result)
         perform_job(result)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
+            break
+    print('Terminating...')
     return 0
 
 
