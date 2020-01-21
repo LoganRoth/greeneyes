@@ -1,0 +1,2 @@
+modelPaths/bestsofarnet.pth filter=lfs diff=lfs merge=lfs -text
+modelPaths/otherbestnet.pth filter=lfs diff=lfs merge=lfs -text
