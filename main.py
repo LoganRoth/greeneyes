@@ -8,12 +8,16 @@ from imutils.video import VideoStream
 from imutils.video import FPS
 import time
 import cv2
+import matplotlib.pyplot as plt
 
 from recycle_models import OtherBestNet, BestSoFarNet
 
 
 frame_size = 266
 
+def imshow(img):
+    #img = img / 2 + 0.5  # unnormalize
+    plt.imshow(np.transpose(img, (1, 2, 0))) 
 
 def object_detection(vs, fps, firstFrame):
     """
@@ -27,13 +31,13 @@ def object_detection(vs, fps, firstFrame):
     while True:
         text = 'No Object'
         # grab the frame from the threaded video stream and resize it
-        # to have a maximum width of 400 pixels
+        # to be the correct frame size for the CNN
         frame = vs.read()
         frame = cv2.resize(frame, (frame_size, frame_size))
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (21, 21), 0)
+        grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        grey = cv2.GaussianBlur(grey, (21, 21), 0)
         
-        frameDelta = cv2.absdiff(firstFrame, gray)
+        frameDelta = cv2.absdiff(firstFrame, grey)
         thresh = cv2.threshold(frameDelta, 25, 255, cv2.THRESH_BINARY)[1]
 
         thresh = cv2.dilate(thresh, None, iterations=2)
@@ -52,14 +56,14 @@ def object_detection(vs, fps, firstFrame):
             state = 1
 
         if state == 1:
-            frame_set.append(gray)
+            frame_set.append(grey)
             if len(frame_set) >= 100:
                 close_count = 0
                 for idx, one_frame in enumerate(frame_set):
                     if idx == 0:
                         prev_frame = one_frame
                         continue
-                    if np.allclose(prev_frame, one_frame, rtol=1):
+                    if np.allclose(prev_frame, one_frame, rtol=2):
                         close_count += 1
                     prev_frame = one_frame
                 if close_count >= 80:
@@ -78,6 +82,9 @@ def object_detection(vs, fps, firstFrame):
             ret = -1
             break
     
+        # if the `g` key was pressed, manual override, send frame
+        if key == ord("g"):
+            break
         # update the FPS counter
         fps.update()
 
@@ -118,12 +125,19 @@ def object_classification(model, frame, use_gpu):
     :return: The classification, 0(blue), 1(grey), 2(trash), or 3(green)
     """
     classify_begin = time.time()
-    frame = frame.transpose(2, 0, 1)
+    # frame comes in shape [266, 266, 3], but CNN needs it in [3, 266, 266]
+    frame = frame.transpose([2, 0, 1])
+    # convert to tensor
     frame = torch.tensor(frame, dtype=torch.float)
+    # normalize the data to [-1, 1], is [0, 255]
+    frame = (frame - 128) / 128
+    # add 4th dimension (number of pictures) for classifier
     frame = frame.reshape(1, 3, frame_size, frame_size)
+    fig = plt.figure(figsize=(25, 4))
+    imshow(frame.cpu()[0])
     if use_gpu:
         frame = frame.cuda()
-    # get sample outputs
+    # get output
     output = model(frame)
     # convert output probabilities to predicted class
     _, preds_tensor = torch.max(output, 1)
@@ -142,7 +156,7 @@ def perform_job(result):
     returns to its original position at the end of this function.
     """
     print('[FUCK] Get moving bitch')
-    #time.sleep(5)
+    time.sleep(5)
     print('[FUCK] Okay done')
     pass
 
@@ -159,9 +173,12 @@ def model_init(model_name, use_gpu):
         print('[ERROR] Invalid model given {}'.format(model_name))
         sys.exit(0)
 
+    # load the pretrained model weights
+    path = 'modelPaths/recycle3.pth'
     if use_gpu:
         print('[INFO] Using GPU')
         model.cuda()
+        #model.load_state_dict(torch.load(path))
         model.load_state_dict(torch.load('modelPaths/{}.'
                                          'pth'.format(model_name.lower())))
     else:
@@ -173,6 +190,9 @@ def model_init(model_name, use_gpu):
     return model
 
 def video_init():
+    """
+    Initialize the video stream
+    """
     print("[INFO] Starting video stream...")
     vs = VideoStream(src=1).start()
     time.sleep(2.0)
@@ -184,25 +204,37 @@ def main():
     parser = argparse.ArgumentParser(usage='python3 main.py [model to use]')
     parser.add_argument(
         '--model',
-        default='BestSoFarNet',
+        default='OtherBestNet',
         dest='model'
     )
     args = parser.parse_args()
+    labels = [
+        'blue',
+        'grey',
+        'trash',
+        'green'
+    ]
+
     # Set up use of GPU
     use_gpu = torch.cuda.is_available()
     model = model_init(args.model, use_gpu)
     vs, fps = video_init()
+
+    # first frame for object detection algorithm to use as the background
     firstFrame = vs.read()
     firstFrame = cv2.resize(firstFrame, (frame_size, frame_size))
     firstFrame = cv2.cvtColor(firstFrame, cv2.COLOR_BGR2GRAY)
     firstFrame = cv2.GaussianBlur(firstFrame, (21, 21), 0)
     
     while True:
+        # detect if an object is present in the frame and has stopped moving
         frame, ret = object_detection(vs, fps, firstFrame)
         if ret == -1:
             break
+        # classify the object in the frame
         result = object_classification(model, frame, use_gpu)
-        print('[INFO] Classification:', result)
+        print('[INFO] Classification:', labels[result])
+        # perform the correct action based on the classification
         perform_job(result)
 
     print('[INFO] Terminating...')
