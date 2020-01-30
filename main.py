@@ -8,16 +8,14 @@ from imutils.video import VideoStream
 from imutils.video import FPS
 import time
 import cv2
-import matplotlib.pyplot as plt
+from torchvision import datasets, transforms
+import win32com.client as wincl
 
 from recycle_models import OtherBestNet, BestSoFarNet
 
 
 frame_size = 266
 
-def imshow(img):
-    #img = img / 2 + 0.5  # unnormalize
-    plt.imshow(np.transpose(img, (1, 2, 0))) 
 
 def object_detection(vs, fps, firstFrame):
     """
@@ -90,8 +88,8 @@ def object_detection(vs, fps, firstFrame):
 
         # if object has stopped moving send frame to the classifier
         if state == 2:
+            cv2.imwrite('tempImage/oneImage/frame.jpg', frame)
             break
-
     return frame, ret
 
 
@@ -125,6 +123,16 @@ def object_classification(model, frame, use_gpu):
     :return: The classification, 0(blue), 1(grey), 2(trash), or 3(green)
     """
     classify_begin = time.time()
+    transforms_set = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
+    frame_folder = datasets.ImageFolder('tempImage', transform=transforms_set)
+    loader = torch.utils.data.DataLoader(frame_folder, batch_size=1)
+    dataiter = iter(loader)
+    frame, _ = dataiter.next()
+    frame.numpy()
+    """
     # frame comes in shape [266, 266, 3], but CNN needs it in [3, 266, 266]
     frame = frame.transpose([2, 0, 1])
     # convert to tensor
@@ -133,18 +141,19 @@ def object_classification(model, frame, use_gpu):
     frame = (frame - 128) / 128
     # add 4th dimension (number of pictures) for classifier
     frame = frame.reshape(1, 3, frame_size, frame_size)
-    fig = plt.figure(figsize=(25, 4))
-    imshow(frame.cpu()[0])
+    """
     if use_gpu:
         frame = frame.cuda()
     # get output
-    output = model(frame)
+    with torch.no_grad():
+        output = model(frame)
+    print(output)
     # convert output probabilities to predicted class
     _, preds_tensor = torch.max(output, 1)
+    print(preds_tensor)
     preds = np.squeeze(preds_tensor.numpy()) if not use_gpu \
         else np.squeeze(preds_tensor.cpu().numpy())
     classify_end = time.time()
-    print(preds)
     print('[INFO] Classification took {} seconds'.format(classify_end - classify_begin))
     return convert_to_my_classes(preds)
 
@@ -219,6 +228,7 @@ def main():
     use_gpu = torch.cuda.is_available()
     model = model_init(args.model, use_gpu)
     vs, fps = video_init()
+    speaker = wincl.Dispatch("SAPI.SpVoice")
 
     # first frame for object detection algorithm to use as the background
     firstFrame = vs.read()
@@ -234,6 +244,7 @@ def main():
         # classify the object in the frame
         result = object_classification(model, frame, use_gpu)
         print('[INFO] Classification:', labels[result])
+        speaker.Speak("{} Bin".format(labels[result]))
         # perform the correct action based on the classification
         perform_job(result)
 
