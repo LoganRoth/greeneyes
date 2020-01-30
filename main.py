@@ -21,11 +21,12 @@ def object_detection(vs, fps, firstFrame):
     """
     Use the webcam to determine if any object is in the frame. Once there is
     one, return the frame.
-    :return: frame containing an object to classify as a numpy array
+    :return: return code of either 0 (success) or -1 (abort)
     """
     ret = 0
     state = 0
     frame_set = []
+    prev_text = ""
     while True:
         text = 'No Object'
         # grab the frame from the threaded video stream and resize it
@@ -53,7 +54,7 @@ def object_detection(vs, fps, firstFrame):
             text = 'Object Moving'
             state = 1
 
-        if state == 1:
+        if state == 1:  # object is moving, see if it has stopped
             frame_set.append(grey)
             if len(frame_set) >= 100:
                 close_count = 0
@@ -64,15 +65,20 @@ def object_detection(vs, fps, firstFrame):
                     if np.allclose(prev_frame, one_frame, rtol=2):
                         close_count += 1
                     prev_frame = one_frame
+                # if 80 of the last 100 frames are (almost) the same then the
+                # object has stopped moving
                 if close_count >= 80:
                     text = 'Object Stopped'
                     state = 2
                 else:
                     _ = frame_set.pop(0)  # remove the oldest frame
                     
-        cv2.putText(frame, text, (50, 100), cv2.FONT_HERSHEY_COMPLEX, 0.5,
-                    (255, 255, 255), 2)
         cv2.imshow("Green Eyes", frame)
+
+        # do not print text to the frame
+        # it can interfer with classification due to need to save the image
+        if prev_text != text:
+            print("[INFO] {}".format(text))
         key = cv2.waitKey(1) & 0xFF
     
         # if the `q` key was pressed, break from the loop
@@ -86,14 +92,24 @@ def object_detection(vs, fps, firstFrame):
         # update the FPS counter
         fps.update()
 
-        # if object has stopped moving send frame to the classifier
+        # if object has stopped moving save the frame and go to classifier
         if state == 2:
             cv2.imwrite('tempImage/oneImage/frame.jpg', frame)
             break
-    return frame, ret
+    return ret
 
 
 def convert_to_my_classes(x):
+    """
+    Converts the object classes to recycling classes.
+    0: Cardboard -> Grey bin :1
+    1: Glass -> Blue bin :0
+    2: Metal - > Blue bin :0
+    3: Orgranics -> Green bin :3
+    4: Paper -> Grey bin :1
+    5: Plastic -> Blue bin :0
+    6: Trash -> Trash :2
+    """
     my_dict = [
         [1, 2, 5],  # blue
         [0, 4],  # grey
@@ -113,16 +129,17 @@ def convert_to_my_classes(x):
         return -1
 
 
-def object_classification(model, frame, use_gpu):
+def object_classification(model, use_gpu):
     """
     Using the model and the given frame determine what type of recycling is
     shown in the frame.
     :param model: The model to use to classify
-    :param frame: The frame containing an object to classify
     :param use_gpu: Indicates if the GPU is available
     :return: The classification, 0(blue), 1(grey), 2(trash), or 3(green)
     """
     classify_begin = time.time()
+
+    # load the image from the folder to match the process the training used
     transforms_set = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
@@ -130,18 +147,10 @@ def object_classification(model, frame, use_gpu):
     frame_folder = datasets.ImageFolder('tempImage', transform=transforms_set)
     loader = torch.utils.data.DataLoader(frame_folder, batch_size=1)
     dataiter = iter(loader)
+    # get the frame
     frame, _ = dataiter.next()
+    # convert the frame to a numpy array
     frame.numpy()
-    """
-    # frame comes in shape [266, 266, 3], but CNN needs it in [3, 266, 266]
-    frame = frame.transpose([2, 0, 1])
-    # convert to tensor
-    frame = torch.tensor(frame, dtype=torch.float)
-    # normalize the data to [-1, 1], is [0, 255]
-    frame = (frame - 128) / 128
-    # add 4th dimension (number of pictures) for classifier
-    frame = frame.reshape(1, 3, frame_size, frame_size)
-    """
     if use_gpu:
         frame = frame.cuda()
     # get output
@@ -183,11 +192,9 @@ def model_init(model_name, use_gpu):
         sys.exit(0)
 
     # load the pretrained model weights
-    path = 'modelPaths/recycle3.pth'
     if use_gpu:
         print('[INFO] Using GPU')
         model.cuda()
-        #model.load_state_dict(torch.load(path))
         model.load_state_dict(torch.load('modelPaths/{}.'
                                          'pth'.format(model_name.lower())))
     else:
@@ -224,10 +231,14 @@ def main():
         'green'
     ]
 
-    # Set up use of GPU
+    # set up use of GPU
     use_gpu = torch.cuda.is_available()
     model = model_init(args.model, use_gpu)
+
+    # intialize the webcam
     vs, fps = video_init()
+
+    # set up the speaker
     speaker = wincl.Dispatch("SAPI.SpVoice")
 
     # first frame for object detection algorithm to use as the background
@@ -238,11 +249,11 @@ def main():
     
     while True:
         # detect if an object is present in the frame and has stopped moving
-        frame, ret = object_detection(vs, fps, firstFrame)
+        ret = object_detection(vs, fps, firstFrame)
         if ret == -1:
             break
         # classify the object in the frame
-        result = object_classification(model, frame, use_gpu)
+        result = object_classification(model, use_gpu)
         print('[INFO] Classification:', labels[result])
         speaker.Speak("{} Bin".format(labels[result]))
         # perform the correct action based on the classification
