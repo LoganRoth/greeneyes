@@ -11,6 +11,7 @@ import cv2
 from torchvision import datasets, transforms
 import win32com.client as wincl
 import serial
+import subprocess as sp
 
 from recycle_models import OtherBestNet, BestSoFarNet
 
@@ -188,10 +189,18 @@ def convert_to_my_classes(x):
         return -1
 
 
-def write_to_file(type_array):
-    for idx, type in enumerate(type_array):
-        text = '{}: {}'.format(type['name', type['count']])
-        cv2.putText(show_frame, text, )
+def write_to_file(type_array, grapher):
+    x = ""
+    for type in type_array:
+        x += '{} {}\n'.format(type['name'], type['count'])
+    with open(os.path.join('type_array', 'array.txt'), 'w') as f:
+        f.write(x)
+
+    # kill old script
+    sp.Popen.terminate(grapher)
+
+    # start it up again
+    grapher = sp.Popen(['python3', 'graphing.py'])
 
 
 """===================== Initialization and Cleanup ========================"""
@@ -268,6 +277,8 @@ def main():
         {'name': 'plastic', 'count': 0},
         {'name': 'trash', 'count': 0}
     ]
+    # prep demo graph
+    grapher = sp.Popen(['python3', 'graphing.py'])
 
     # set up use of GPU
     use_gpu = torch.cuda.is_available()
@@ -301,7 +312,7 @@ def main():
         # classify the object in the frame
         result = object_classification(model, use_gpu)
         type_array[result]['type'] += 1
-        write_to_file(type_array)
+        write_to_file(type_array, grapher)
         result = convert_to_my_classes(result)
         print('[INFO] Classification:', bin_dct[result]['label'])
         speaker.Speak("{} Bin".format(bin_dct[result]['label']))
