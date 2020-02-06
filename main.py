@@ -90,6 +90,7 @@ def object_detection(vs, fps, firstFrame):
         # it can interfer with classification due to need to save the image
         if prev_text != text:
             print("[INFO] {}".format(text))
+        prev_text = text
         key = cv2.waitKey(1) & 0xFF
 
         # if the `q` key was pressed, break from the loop
@@ -191,8 +192,8 @@ def convert_to_my_classes(x):
 
 def write_to_file(type_array, grapher):
     x = ""
-    for type in type_array:
-        x += '{} {}\n'.format(type['name'], type['count'])
+    for my_type in type_array:
+        x += '{} {}\n'.format(my_type['name'], my_type['count'])
     with open(os.path.join('type_array', 'array.txt'), 'w') as f:
         f.write(x)
 
@@ -200,7 +201,7 @@ def write_to_file(type_array, grapher):
     sp.Popen.terminate(grapher)
 
     # start it up again
-    grapher = sp.Popen(['python3', 'graphing.py'])
+    grapher = sp.Popen(['python', 'graphing.py'])
 
 
 """===================== Initialization and Cleanup ========================"""
@@ -241,7 +242,28 @@ def video_init():
     vs = VideoStream(src=1).start()
     time.sleep(2.0)
     fps = FPS().start()
-    return vs, fps
+    ret = 0
+
+    # aim the camera
+    while True:
+        frame = vs.read()
+        frame = cv2.resize(frame, (frame_size, frame_size))
+        cv2.putText(frame, "Press g when camera is aimed", (5, 50),
+                    cv2.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), 2)
+        cv2.imshow("Green Eyes", frame)
+        key = cv2.waitKey(1) & 0xFF
+
+        # if the `q` key was pressed, break from the loop and terminate
+        if key == ord("q"):
+            ret = -1
+            break
+        # if the `g` key was pressed, break from the loop and continue
+        if key == ord("g"):
+            ret = 0
+            break
+    
+        fps.update()
+    return vs, fps, ret
 
 
 def cleanup(vs, fps):
@@ -260,7 +282,7 @@ def cleanup(vs, fps):
 
 
 def main():
-    parser = argparse.ArgumentParser(usage='python3 main.py [model to use]')
+    parser = argparse.ArgumentParser(usage='python main.py [model to use]')
     parser.add_argument(
         '--model',
         default='OtherBestNet',
@@ -278,46 +300,46 @@ def main():
         {'name': 'trash', 'count': 0}
     ]
     # prep demo graph
-    grapher = sp.Popen(['python3', 'graphing.py'])
+    grapher = sp.Popen(['python', 'graphing.py'])
 
     # set up use of GPU
     use_gpu = torch.cuda.is_available()
     model = model_init(args.model, use_gpu)
 
     # intialize the webcam
-    vs, fps = video_init()
+    vs, fps, ret = video_init()
+    if ret == 0:
+        # intialize arduino connection
+        try:
+            arduino = serial.Serial('COM8', 9600, timeout=.1)
+            time.sleep(1)
+        except FileNotFoundError:
+            cleanup()
+            sys.exit(0)
 
-    # intialize arduino connection
-    try:
-        arduino = serial.Serial('COM8', 9600, timeout=.1)
-        time.sleep(1)
-    except FileNotFoundError:
-        cleanup()
-        sys.exit(0)
+        # set up the speaker
+        speaker = wincl.Dispatch("SAPI.SpVoice")
 
-    # set up the speaker
-    speaker = wincl.Dispatch("SAPI.SpVoice")
+        # first frame for object detection algorithm to use as the background
+        firstFrame = vs.read()
+        firstFrame = cv2.resize(firstFrame, (frame_size, frame_size))
+        firstFrame = cv2.cvtColor(firstFrame, cv2.COLOR_BGR2GRAY)
+        firstFrame = cv2.GaussianBlur(firstFrame, (21, 21), 0)
 
-    # first frame for object detection algorithm to use as the background
-    firstFrame = vs.read()
-    firstFrame = cv2.resize(firstFrame, (frame_size, frame_size))
-    firstFrame = cv2.cvtColor(firstFrame, cv2.COLOR_BGR2GRAY)
-    firstFrame = cv2.GaussianBlur(firstFrame, (21, 21), 0)
-
-    while True:
-        # detect if an object is present in the frame and has stopped moving
-        ret = object_detection(vs, fps, firstFrame, type_array)
-        if ret == -1:
-            break
-        # classify the object in the frame
-        result = object_classification(model, use_gpu)
-        type_array[result]['type'] += 1
-        write_to_file(type_array, grapher)
-        result = convert_to_my_classes(result)
-        print('[INFO] Classification:', bin_dct[result]['label'])
-        speaker.Speak("{} Bin".format(bin_dct[result]['label']))
-        # perform the correct action based on the classification
-        perform_job(result, arduino)
+        while True:
+            # detect if an object is present in the frame and has stopped moving
+            ret = object_detection(vs, fps, firstFrame, type_array)
+            if ret == -1:
+                break
+            # classify the object in the frame
+            result = object_classification(model, use_gpu)
+            type_array[result]['type'] += 1
+            write_to_file(type_array, grapher)
+            result = convert_to_my_classes(result)
+            print('[INFO] Classification:', bin_dct[result]['label'])
+            speaker.Speak("{} Bin".format(bin_dct[result]['label']))
+            # perform the correct action based on the classification
+            perform_job(result, arduino)
 
     cleanup(vs, fps)
     return 0

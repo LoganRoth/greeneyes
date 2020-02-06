@@ -10,10 +10,8 @@ def main():
     h = []
     tick_label = []
     for line in data:
-        stuff = line.split()
-        label = stuff[0]
-        height = int(stuff[1])
-
+        label, height = line.split()
+        height = int(height)
         h.append(height)
         tick_label.append(label)
     x = [0, 1, 2, 3, 4, 5, 6]
