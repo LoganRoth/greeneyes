@@ -18,10 +18,10 @@ from recycle_models import OtherBestNet, BestSoFarNet
 
 frame_size = 266
 bin_dct = [
-    {'label': 'blue', 'byte': b'b', 'types': [1, 2, 5]},
-    {'label': 'grey', 'byte': b'g', 'types': [0, 4]},
-    {'label': 'green', 'byte': b'o', 'types': [3]},
-    {'label': 'trash', 'byte': b't', 'types': [6]},
+    {'label': 'blue', 'byte': b'1', 'types': [1, 2, 5]},
+    {'label': 'grey', 'byte': b'2', 'types': [0, 4]},
+    {'label': 'green', 'byte': b'3', 'types': [3]},
+    {'label': 'trash', 'byte': b'4', 'types': [6]},
 ]
 
 
@@ -38,32 +38,35 @@ def object_detection(vs, fps, firstFrame):
     state = 0
     frame_set = []
     prev_text = ""
+    hardcode = 0
+    frame_counter = 0
     while True:
         text = 'No Object'
+        if state == 2:
+            text = 'Object Stopped'
         # grab the frame from the threaded video stream and resize it
         # to be the correct frame size for the CNN
         frame = vs.read()
         frame = cv2.resize(frame, (frame_size, frame_size))
-        grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        grey = cv2.GaussianBlur(grey, (21, 21), 0)
+        if state != 2:
+            grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            grey = cv2.GaussianBlur(grey, (21, 21), 0)
 
-        frameDelta = cv2.absdiff(firstFrame, grey)
-        thresh = cv2.threshold(frameDelta, 25, 255, cv2.THRESH_BINARY)[1]
+            frameDelta = cv2.absdiff(firstFrame, grey)
+            thresh = cv2.threshold(frameDelta, 25, 255, cv2.THRESH_BINARY)[1]
 
-        thresh = cv2.dilate(thresh, None, iterations=2)
-        cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,
-                                cv2.CHAIN_APPROX_SIMPLE)
-        cnts = imutils.grab_contours(cnts)
-
-        # loop over the contours
-        for c in cnts:
-            # if the contour is too small, ignore it
-            if cv2.contourArea(c) < 150:
-                state = 0
-                frame_set = []
-                continue
-            text = 'Object Moving'
-            state = 1
+            thresh = cv2.dilate(thresh, None, iterations=2)
+            cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,
+                                    cv2.CHAIN_APPROX_SIMPLE)
+            cnts = imutils.grab_contours(cnts)
+            # loop over the contours
+            for c in cnts:
+                # if the contour is too small, ignore it
+                if cv2.contourArea(c) < 150:
+                    state = 0
+                    continue
+                text = 'Object Moving'
+                state = 1
 
         if state == 1:  # object is moving, see if it has stopped
             frame_set.append(grey)
@@ -73,14 +76,15 @@ def object_detection(vs, fps, firstFrame):
                     if idx == 0:
                         prev_frame = one_frame
                         continue
-                    if np.allclose(prev_frame, one_frame, rtol=2):
+                    if np.allclose(prev_frame, one_frame, rtol=4):
                         close_count += 1
                     prev_frame = one_frame
                 # if 80 of the last 100 frames are (almost) the same then the
                 # object has stopped moving
-                if close_count >= 80:
+                if close_count >= 75:
                     text = 'Object Stopped'
                     state = 2
+                    frame_counter = 0
                 else:
                     _ = frame_set.pop(0)  # remove the oldest frame
 
@@ -89,7 +93,7 @@ def object_detection(vs, fps, firstFrame):
         # do not print text to the frame
         # it can interfer with classification due to need to save the image
         if prev_text != text:
-            print("[INFO] {}".format(text))
+            print('[INFO] {}'.format(text))
         prev_text = text
         key = cv2.waitKey(1) & 0xFF
 
@@ -101,14 +105,32 @@ def object_detection(vs, fps, firstFrame):
         # if the `g` key was pressed, manual override, send frame
         if key == ord("g"):
             break
+
+        # if 1-4 is pressed return that hardcoded bin number
+        if key == ord("1"):
+            hardcode = 0
+            break
+        if key == ord("2"):
+            hardcode = 1
+            break
+        if key == ord("3"):
+            hardcode = 2
+            break
+        if key == ord("4"):
+            hardcode = 3
+            break
         # update the FPS counter
         fps.update()
 
         # if object has stopped moving save the frame and go to classifier
         if state == 2:
-            cv2.imwrite('tempImage/oneImage/frame.jpg', frame)
+            time.sleep(1)
+            new_frame = vs.read()
+            new_frame = cv2.resize(new_frame, (frame_size, frame_size))
+            cv2.imshow("Green Eyes", new_frame)
+            cv2.imwrite('tempImage/oneImage/frame.jpg', new_frame)
             break
-    return ret
+    return ret, hardcode
 
 
 def object_classification(model, use_gpu):
@@ -138,15 +160,14 @@ def object_classification(model, use_gpu):
     # get output
     with torch.no_grad():
         output = model(frame)
-    print(output)
     # convert output probabilities to predicted class
     _, preds_tensor = torch.max(output, 1)
-    print(preds_tensor)
     preds = np.squeeze(preds_tensor.numpy()) if not use_gpu \
         else np.squeeze(preds_tensor.cpu().numpy())
     classify_end = time.time()
     print('[INFO] Classification took {} seconds'.format(
                                                 classify_end - classify_begin))
+    torch.cuda.empty_cache()
     return preds
 
 
@@ -160,11 +181,14 @@ def perform_job(result, arduino):
     arduino.write(bin_dct[result]['byte'])
     timeout_start = time.time()
     timeout = 0
-    while timeout < 60:  # 60 second timeout
+    while timeout < 30:  # 30 second timeout
         data = arduino.readline()[:-2]
         if data:
+            print('[INFO] Sent to bin {}'.format(data))
             break
         timeout = time.time() - timeout_start
+    if timeout > 30:
+        print('[ERROR] Timeout occurred')
     print('[INFO] Ready for next item')
 
 
@@ -197,11 +221,13 @@ def write_to_file(type_array, grapher):
     with open(os.path.join('type_array', 'array.txt'), 'w') as f:
         f.write(x)
 
+    # start new script
+    new_grapher = sp.Popen(['python', 'graphing.py'])
+
     # kill old script
     sp.Popen.terminate(grapher)
 
-    # start it up again
-    grapher = sp.Popen(['python', 'graphing.py'])
+    return new_grapher
 
 
 """===================== Initialization and Cleanup ========================"""
@@ -238,7 +264,7 @@ def video_init():
     """
     Initialize the video stream
     """
-    print("[INFO] Starting video stream...")
+    print('[INFO] Starting video stream...')
     vs = VideoStream(src=1).start()
     time.sleep(2.0)
     fps = FPS().start()
@@ -270,8 +296,8 @@ def cleanup(vs, fps):
     print('[INFO] Terminating...')
     # stop the timer and display FPS information
     fps.stop()
-    print("[INFO] Elapsed time: {:.2f}".format(fps.elapsed()))
-    print("[INFO] Approx. FPS: {:.2f}".format(fps.fps()))
+    print('[INFO] Elapsed time: {:.2f}'.format(fps.elapsed()))
+    print('[INFO] Approx. FPS: {:.2f}'.format(fps.fps()))
 
     # do a bit of cleanup
     cv2.destroyAllWindows()
@@ -285,7 +311,7 @@ def main():
     parser = argparse.ArgumentParser(usage='python main.py [model to use]')
     parser.add_argument(
         '--model',
-        default='OtherBestNet',
+        default='BestSoFarNet',
         dest='model'
     )
     args = parser.parse_args()
@@ -301,6 +327,7 @@ def main():
     ]
     # prep demo graph
     grapher = sp.Popen(['python', 'graphing.py'])
+    write_to_file(type_array, grapher)
 
     # set up use of GPU
     use_gpu = torch.cuda.is_available()
@@ -311,7 +338,7 @@ def main():
     if ret == 0:
         # intialize arduino connection
         try:
-            arduino = serial.Serial('COM8', 9600, timeout=.1)
+            arduino = serial.Serial('COM3', 9600, timeout=.1)
             time.sleep(1)
         except FileNotFoundError:
             cleanup()
@@ -328,18 +355,24 @@ def main():
 
         while True:
             # detect if an object is present in the frame and has stopped moving
-            ret = object_detection(vs, fps, firstFrame, type_array)
+            ret, hc = object_detection(vs, fps, firstFrame)
             if ret == -1:
                 break
             # classify the object in the frame
-            result = object_classification(model, use_gpu)
-            type_array[result]['type'] += 1
-            write_to_file(type_array, grapher)
-            result = convert_to_my_classes(result)
+            if hc == 0:
+                result = object_classification(model, use_gpu)
+            else:
+                result = hc
+            type_array[result]['count'] += 1
+            grapher = write_to_file(type_array, grapher)
+            if hc == 0:
+                result = convert_to_my_classes(result)
             print('[INFO] Classification:', bin_dct[result]['label'])
             speaker.Speak("{} Bin".format(bin_dct[result]['label']))
             # perform the correct action based on the classification
-            perform_job(result, arduino)
+            #perform_job(result, arduino)
+            print('"Moving"')
+            time.sleep(1)
 
     cleanup(vs, fps)
     return 0

@@ -18,7 +18,10 @@ def main():
     w = 0.5
     plt.bar(x, h, w, tick_label=tick_label)
     plt.title('Green Eyes Analytics')
+    mng = plt.get_current_fig_manager()
+    mng.full_screen_toggle()
     plt.show()
+    plt.close('all')
     return 0
 
 
